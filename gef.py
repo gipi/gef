@@ -9401,6 +9401,75 @@ class GefFunctionsCommand(GenericCommand):
         gef_print(self.__doc__)
         return
 
+
+@register_command
+class JSValueCommand(GenericCommand):
+    '''Print JS objects at address and set some convenience variables from that.'''
+    _cmdline_ = "jsvalue"
+    _syntax_  = "{:s} <address>".format(_cmdline_)
+    _aliases_ = ["jv",]
+    def __init__(self):
+        super(JSValueCommand, self).__init__(complete=gdb.COMPLETE_FILENAME)
+        return
+
+    def do_invoke(self, argv):
+        '''Parses addresses and creates objects, making them available
+        as convenience variables'''
+        # first, we get the address
+        addr = long(gdb.parse_and_eval(argv[0]))
+
+        # tranform it to an internal value
+        value = gdb.Value(addr)
+        jsobject_pointer_type = gdb.lookup_type('JSC::JSObject').pointer()
+        jsobject = value.cast(jsobject_pointer_type).dereference()
+        gdb.set_convenience_variable('jobject', jsobject)
+
+        structureID = jsobject['m_structureID']
+        # now we get the StructureTable
+        # (('JSC::MarkedBlock'*)(0x55ba1aa901c0 & ~(16*1024 - 1)))->m_weakSet\
+        #    .m_vm->heap->m_structureIDTable.m_table.get()[314]
+
+        # starting from the MarkedBlock class
+        marked_block_addr = gdb.Value(addr & ~(16 * 1024 - 1))
+        marked_block_pointer_type = gdb.lookup_type('JSC::MarkedBlock').pointer()
+        marked_block = marked_block_addr.cast(marked_block_pointer_type).dereference()
+
+        # and we traverse all the attributes to find the structure
+        structure_table_addr = marked_block['m_weakSet']['m_vm']['heap']['m_structureIDTable']['m_table']['_M_t']['_M_head_impl']
+        structure_table_ptr_type = gdb.lookup_type('JSC::StructureIDTable::StructureOrOffset').pointer()
+        structure_table = structure_table_addr.cast(structure_table_ptr_type)
+        structure = structure_table[structureID]['structure'].dereference()
+        gdb.set_convenience_variable('structure', structure)
+
+        class_name = structure['m_classInfo']['className'].string('utf-8')
+
+        # the PropertyTable
+        property_table_ptr_type = gdb.lookup_type('JSC::PropertyTable').pointer()
+        property_table_addr = structure['m_propertyTableUnsafe']['m_cell']
+        property_table = property_table_addr.cast(property_table_ptr_type).dereference()
+        if property_table_addr != 0x00:  # if the PropertyTable is NULL then not look for properties
+            gdb.set_convenience_variable('property_table', property_table)
+
+            if is_debug():
+                gef_print(f'{property_table}')
+
+            valuetype_addr = property_table['m_index'] + property_table['m_indexSize']
+            valuetype_ptr_type = gdb.lookup_type('JSC::PropertyTable::ValueType').pointer()
+            valuetype_table = valuetype_addr.cast(valuetype_ptr_type)
+            gdb.set_convenience_variable('valuetype', valuetype_table)
+
+            def _get_key(_vt_table, index):
+                _entry = _vt_table[index]
+                _length = _entry['key']['m_length']
+                return _entry['key']['m_data8'].string('utf-8', "", _length)
+
+            keys = '\n\t'.join([_get_key(valuetype_table, _) for _ in range(property_table['m_keyCount'])])
+        else:
+            keys = ''
+
+        return gef_print(f'class: {class_name}\nkeys:\n\t{keys}')
+
+
 class GefCommand(gdb.Command):
     """GEF main command: view all new commands by typing `gef`."""
 

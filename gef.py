@@ -9471,6 +9471,18 @@ class JSValue(object):
         return JSObject(self.value)
 
 
+from enum import Flag
+
+
+class IndexingType(Flag):
+    isArray = 0x01
+    UndecidedShape = 0x02
+    Int32Shape = 0x04
+    CountigousShape = 0x08
+    ArrayStorageShape = 0x0a
+    SlowPutArrayStorageShape = 0x0c
+
+
 class JSObject(object):
 
     first_out_of_line_offset = 0x64
@@ -9480,7 +9492,7 @@ class JSObject(object):
         self._parse_memory()
 
     def __repr__(self):
-        return f'<{self.__class__.__name__}({self.addr:x})>'
+        return f'<{self.__class__.__name__}({self.addr}[{self.indexingType}])>'
 
     def __str__(self):
         keys_str = '\n\t'.join(['{0}: {1}'.format(_[0], _[1]) for _ in self.keys])
@@ -9540,6 +9552,10 @@ class JSObject(object):
     def _indexing_header(self):
         indexing_header_ptr_type = gdb.lookup_type('JSC::IndexingHeader').pointer()
         return self.butterfly.cast(indexing_header_ptr_type) - 1
+
+    @property
+    def indexingType(self):
+        return IndexingType(int(self.jsobject['m_indexingType']))
 
     @property
     def _outofline_storage(self):

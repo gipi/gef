@@ -9402,72 +9402,201 @@ class GefFunctionsCommand(GenericCommand):
         return
 
 
+def dereference(addr, type_str):
+    ptr_type = gdb.lookup_type(type_str).pointer()
+    return addr.cast(ptr_type).dereference()
+
+
+class JSValue(object):
+    '''Wraps addresses in their JSValue representations.'''
+
+    TagTypeNumber   = 0xffff000000000000
+    TagBitTypeOther = 0x2
+    TagBitBool      = 0x4
+    TagBitUndefined = 0x8
+    DoubleEncodeOffset = 0x1000000000000
+    ValueEmpty      = 0x0
+    ValueDeleted    = 0x4
+
+    def __init__(self, value):
+        self.value = gdb.Value(value)
+
+    def __repr__(self):
+        return f'<{self.__class__.__name__}({self.value!s})>'
+
+    @classmethod
+    def from_address(cls, addr):
+        '''Initialize the instance dereferencing the value from the address.'''
+        addr = gdb.Value(addr)
+        uint64_ptr_type = gdb.lookup_type('uint64_t').pointer()
+        return cls(addr.cast(uint64_ptr_type).dereference())
+
+    def _decode_number(self):
+        if (self.value & self.TagTypeNumber) == self.TagTypeNumber:
+            return int(self.value ^ self.TagTypeNumber)  # we must remove the tag obviously
+        value = int(self.value - self.DoubleEncodeOffset)
+        return struct.unpack('d', value.to_bytes(8, 'little'))[0]
+
+    def _decode_other(self):
+        # we are going to check
+        if self.value & self.TagBitBool:
+            return bool(self.value & 1)
+
+        if self.value & self.TagBitUndefined:
+            return None  # undefined (maybe we should distinguish them?)
+
+        return None  # is remained null
+
+    def _decode_special_values(self):
+        # Empty and Deleted are special values used internally
+        raise ValueError('for now I don\'t care about special values :)')
+
+    def decode(self):
+        '''Webkit internally encodes types, this method decodes them and return the
+        corresponding python's datatype'''
+        # for the actual implementation look at JSCJSValue.h
+        # we are looking for the top 16-bit to recognize types
+        if bool(self.value & self.TagTypeNumber):
+            return self._decode_number()
+
+        # if we are here then is not a number
+        # but could be some form of "tagged" immediate
+        if bool(self.value & self.TagBitTypeOther):
+            return self._decode_other()
+
+        if self.value == self.ValueDeleted or self.value == self.ValueDeleted:
+            return self._decode_special_values()
+
+        # if we are here then we have (probably) an object
+        return JSObject(self.value)
+
+
+class JSObject(object):
+
+    first_out_of_line_offset = 0x64
+
+    def __init__(self, addr):
+        self.addr = gdb.Value(addr)
+        self._parse_memory()
+
+    def __repr__(self):
+        return f'<{self.__class__.__name__}({self.addr:x})>'
+
+    def __str__(self):
+        keys_str = '\n\t'.join(['{0}: {1}'.format(_[0], _[1]) for _ in self.keys])
+        return f'{self.class_name} {{\n\t{keys_str}\n}}'
+
+    def _parse_memory(self):
+        self.jsobject = self._parse_jsobject()
+        self.butterfly = self.jsobject['m_butterfly']['m_value']
+        self.structure = self._parse_structure()
+        self.class_name = self.structure['m_classInfo']['className'].string('utf-8')
+        self.properties = self._parse_properties()
+
+    def _parse_jsobject(self):
+        return dereference(self.addr, 'JSC::JSObject')
+
+    def _parse_structure(self):
+        self._structureID = self.jsobject['m_structureID']
+        # starting from the MarkedBlock class
+        self.marked_block = dereference(self.addr & ~(16 * 1024 - 1), 'JSC::MarkedBlock')
+
+        # and we traverse all the attributes to find the structure
+        self.structure_table_addr = self.marked_block['m_weakSet']['m_vm']['heap']['m_structureIDTable']['m_table']['_M_t']['_M_head_impl']
+        # self.structure = dereference(structure_table_addr, 'JSC::StructureIDTable::StructureOrOffset')
+        structure_table_ptr_type = gdb.lookup_type('JSC::StructureIDTable::StructureOrOffset').pointer()
+        structure_table = self.structure_table_addr.cast(structure_table_ptr_type)
+        return structure_table[self._structureID]['structure'].dereference()
+
+    def _parse_properties(self):
+        # the PropertyTable class is a wrapper around an array of ValueType
+        self.property_table_addr = self.structure['m_propertyTableUnsafe']['m_cell']
+        property_table_ptr_type = gdb.lookup_type('JSC::PropertyTable').pointer()
+        self.property_table = self.property_table_addr.cast(property_table_ptr_type).dereference()
+
+        if not self.has_properties():
+            return None
+
+        valuetype_addr = self.property_table['m_index'] + self.property_table['m_indexSize']
+        valuetype_ptr_type = gdb.lookup_type('JSC::PropertyTable::ValueType').pointer()
+        valuetype_table = valuetype_addr.cast(valuetype_ptr_type)
+
+        return valuetype_table
+
+    def _is_inline_offset(self, offset):
+        return offset < self.first_out_of_line_offset
+
+    @property
+    def _inline_storage(self):
+        # FIXME: maybe a little mess, clean up
+        jsobject_ptr_type = gdb.lookup_type('JSC::JSObject').pointer()
+        property_storage_ptr_type = gdb.lookup_type('JSC::PropertyStorage').pointer()
+        inline_storage_addr = self.addr.cast(jsobject_ptr_type) + 1
+        inline_storage = inline_storage_addr.cast(property_storage_ptr_type)
+
+        return inline_storage
+
+    @property
+    def _indexing_header(self):
+        indexing_header_ptr_type = gdb.lookup_type('JSC::IndexingHeader').pointer()
+        return self.butterfly.cast(indexing_header_ptr_type) - 1
+
+    @property
+    def _outofline_storage(self):
+        property_storage_ptr_type = gdb.lookup_type('JSC::PropertyStorage').pointer()
+        return self._indexing_header.cast(property_storage_ptr_type)
+
+    def _property_for_offset(self, offset):
+        # this mimics JSC::JSObject::locationForOffset
+        if self._is_inline_offset(offset):
+            return JSValue(self._inline_storage[offset])
+
+        offset = -(offset - self.first_out_of_line_offset) - 1
+
+        return JSValue(self._outofline_storage[offset])
+
+    def has_properties(self):
+        return self.property_table_addr != 0x00  # if the PropertyTable is NULL then not look for properties
+
+    def export_to_gdb(self):
+        '''sets some convenience variables'''
+        gdb.set_convenience_variable('jsobject', self.jsobject)
+        gdb.set_convenience_variable('structure', self.structure)
+
+        if self.has_properties():
+            gdb.set_convenience_variable('properties', self.properties)
+
+    @property
+    def keys(self):
+        if not self.has_properties():
+            return []
+
+        def _get_key(_vt_table, index):
+            _entry = _vt_table[index]
+            _length = _entry['key']['m_length']
+            return _entry['key']['m_data8'].string('utf-8', "", _length)
+
+        #return [(_get_key(self.properties, _), self.properties[_]['offset']) for _ in range(self.property_table['m_keyCount'])]
+        return [(_get_key(self.properties, _), self._property_for_offset(self.properties[_]['offset'])) for _ in range(self.property_table['m_keyCount'])]
+
+
 @register_command
 class JSValueCommand(GenericCommand):
     '''Print JS objects at address and set some convenience variables from that.'''
+
     _cmdline_ = "jsvalue"
     _syntax_  = "{:s} <address>".format(_cmdline_)
-    _aliases_ = ["jv",]
+    _aliases_ = ["jv", ]
+
     def __init__(self):
         super(JSValueCommand, self).__init__(complete=gdb.COMPLETE_FILENAME)
         return
 
     def do_invoke(self, argv):
-        '''Parses addresses and creates objects, making them available
-        as convenience variables'''
-        # first, we get the address
         addr = long(gdb.parse_and_eval(argv[0]))
+        jsvalue = JSValue(addr).decode()
 
-        # tranform it to an internal value
-        value = gdb.Value(addr)
-        jsobject_pointer_type = gdb.lookup_type('JSC::JSObject').pointer()
-        jsobject = value.cast(jsobject_pointer_type).dereference()
-        gdb.set_convenience_variable('jobject', jsobject)
-
-        structureID = jsobject['m_structureID']
-        # now we get the StructureTable
-        # (('JSC::MarkedBlock'*)(0x55ba1aa901c0 & ~(16*1024 - 1)))->m_weakSet\
-        #    .m_vm->heap->m_structureIDTable.m_table.get()[314]
-
-        # starting from the MarkedBlock class
-        marked_block_addr = gdb.Value(addr & ~(16 * 1024 - 1))
-        marked_block_pointer_type = gdb.lookup_type('JSC::MarkedBlock').pointer()
-        marked_block = marked_block_addr.cast(marked_block_pointer_type).dereference()
-
-        # and we traverse all the attributes to find the structure
-        structure_table_addr = marked_block['m_weakSet']['m_vm']['heap']['m_structureIDTable']['m_table']['_M_t']['_M_head_impl']
-        structure_table_ptr_type = gdb.lookup_type('JSC::StructureIDTable::StructureOrOffset').pointer()
-        structure_table = structure_table_addr.cast(structure_table_ptr_type)
-        structure = structure_table[structureID]['structure'].dereference()
-        gdb.set_convenience_variable('structure', structure)
-
-        class_name = structure['m_classInfo']['className'].string('utf-8')
-
-        # the PropertyTable
-        property_table_ptr_type = gdb.lookup_type('JSC::PropertyTable').pointer()
-        property_table_addr = structure['m_propertyTableUnsafe']['m_cell']
-        property_table = property_table_addr.cast(property_table_ptr_type).dereference()
-        if property_table_addr != 0x00:  # if the PropertyTable is NULL then not look for properties
-            gdb.set_convenience_variable('property_table', property_table)
-
-            if is_debug():
-                gef_print(f'{property_table}')
-
-            valuetype_addr = property_table['m_index'] + property_table['m_indexSize']
-            valuetype_ptr_type = gdb.lookup_type('JSC::PropertyTable::ValueType').pointer()
-            valuetype_table = valuetype_addr.cast(valuetype_ptr_type)
-            gdb.set_convenience_variable('valuetype', valuetype_table)
-
-            def _get_key(_vt_table, index):
-                _entry = _vt_table[index]
-                _length = _entry['key']['m_length']
-                return _entry['key']['m_data8'].string('utf-8', "", _length)
-
-            keys = '\n\t'.join([_get_key(valuetype_table, _) for _ in range(property_table['m_keyCount'])])
-        else:
-            keys = ''
-
-        return gef_print(f'class: {class_name}\nkeys:\n\t{keys}')
+        return gef_print(f'{jsvalue!s}')
 
 
 class GefCommand(gdb.Command):

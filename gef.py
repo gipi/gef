@@ -9474,6 +9474,23 @@ class JSValue(object):
 from enum import Flag
 
 
+class JSTypeMetaclass(type):
+
+    _jstype_type = gdb.lookup_type('JSC::JSType')
+
+    def __getattr__(cls, key):
+        key_jsc = f'JSC::{key}'
+        if key_jsc not in cls._jstype_type.keys():
+            raise AttributeError(key)
+
+        return cls._jstype_type[key_jsc].enumval
+
+
+class JSType(metaclass=JSTypeMetaclass):
+    '''Create an enum with values from the actual enumeration JSType'''
+    pass
+
+
 class IndexingType(Flag):
     isArray = 0x01
     UndecidedShape = 0x02

@@ -9404,7 +9404,7 @@ class GefFunctionsCommand(GenericCommand):
 
 def dereference(addr, type_str):
     ptr_type = gdb.lookup_type(type_str).pointer()
-    return addr.cast(ptr_type).dereference()
+    return gdb.Value(addr).cast(ptr_type).dereference()
 
 
 class JSValue(object):
@@ -9419,7 +9419,7 @@ class JSValue(object):
     ValueDeleted    = 0x4
 
     def __init__(self, value):
-        self.value = gdb.Value(value)
+        self.value = gdb.Value(value)  # remember to cast to int when arithmetic is involved
 
     def __repr__(self):
         return f'<{self.__class__.__name__}({self.value!s})>'
@@ -9432,17 +9432,17 @@ class JSValue(object):
         return cls(addr.cast(uint64_ptr_type).dereference())
 
     def _decode_number(self):
-        if (self.value & self.TagTypeNumber) == self.TagTypeNumber:
-            return int(self.value ^ self.TagTypeNumber)  # we must remove the tag obviously
+        if (int(self.value) & self.TagTypeNumber) == self.TagTypeNumber:
+            return int(int(self.value) ^ self.TagTypeNumber)  # we must remove the tag obviously
         value = int(self.value - self.DoubleEncodeOffset)
         return struct.unpack('d', value.to_bytes(8, 'little'))[0]
 
     def _decode_other(self):
         # we are going to check
-        if self.value & self.TagBitBool:
+        if int(self.value) & self.TagBitBool:
             return bool(self.value & 1)
 
-        if self.value & self.TagBitUndefined:
+        if int(self.value) & self.TagBitUndefined:
             return None  # undefined (maybe we should distinguish them?)
 
         return None  # is remained null
@@ -9456,12 +9456,12 @@ class JSValue(object):
         corresponding python's datatype'''
         # for the actual implementation look at JSCJSValue.h
         # we are looking for the top 16-bit to recognize types
-        if bool(self.value & self.TagTypeNumber):
+        if bool(int(self.value) & self.TagTypeNumber):
             return self._decode_number()
 
         # if we are here then is not a number
         # but could be some form of "tagged" immediate
-        if bool(self.value & self.TagBitTypeOther):
+        if bool(int(self.value) & self.TagBitTypeOther):
             return self._decode_other()
 
         if self.value == self.ValueDeleted or self.value == self.ValueDeleted:
@@ -9499,7 +9499,7 @@ class JSObject(object):
     def _parse_structure(self):
         self._structureID = self.jsobject['m_structureID']
         # starting from the MarkedBlock class
-        self.marked_block = dereference(self.addr & ~(16 * 1024 - 1), 'JSC::MarkedBlock')
+        self.marked_block = dereference(int(self.addr) & ~(16 * 1024 - 1), 'JSC::MarkedBlock')
 
         # and we traverse all the attributes to find the structure
         self.structure_table_addr = self.marked_block['m_weakSet']['m_vm']['heap']['m_structureIDTable']['m_table']['_M_t']['_M_head_impl']

@@ -9402,7 +9402,7 @@ class GefFunctionsCommand(GenericCommand):
         return
 
 
-def dereference(addr, type_str):
+def _dereference(addr, type_str):  # TODO: use gef's
     ptr_type = gdb.lookup_type(type_str).pointer()
     return gdb.Value(addr).cast(ptr_type).dereference()
 
@@ -9523,16 +9523,16 @@ class JSObject(object):
         self.properties = self._parse_properties()
 
     def _parse_jsobject(self):
-        return dereference(self.addr, 'JSC::JSObject')
+        return _dereference(self.addr, 'JSC::JSObject')
 
     def _parse_structure(self):
         self._structureID = self.jsobject['m_structureID']
         # starting from the MarkedBlock class
-        self.marked_block = dereference(int(self.addr) & ~(16 * 1024 - 1), 'JSC::MarkedBlock')
+        self.marked_block = _dereference(int(self.addr) & ~(16 * 1024 - 1), 'JSC::MarkedBlock')
 
         # and we traverse all the attributes to find the structure
         self.structure_table_addr = self.marked_block['m_weakSet']['m_vm']['heap']['m_structureIDTable']['m_table']['_M_t']['_M_head_impl']
-        # self.structure = dereference(structure_table_addr, 'JSC::StructureIDTable::StructureOrOffset')
+        # self.structure = _dereference(structure_table_addr, 'JSC::StructureIDTable::StructureOrOffset')
         structure_table_ptr_type = gdb.lookup_type('JSC::StructureIDTable::StructureOrOffset').pointer()
         structure_table = self.structure_table_addr.cast(structure_table_ptr_type)
         return structure_table[self._structureID]['structure'].dereference()

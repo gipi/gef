@@ -9451,6 +9451,18 @@ class JSValue(object):
         # Empty and Deleted are special values used internally
         raise ValueError('for now I don\'t care about special values :)')
 
+    def _decode_objects(self):
+        '''If it's a subclass of JSCell I'm the guy for you'''
+        jscell = JSCell(self.value)
+
+        cell_type = int(jscell.type)
+
+        # here we mimic the logic inside ...
+        if cell_type == JSType.StringType:
+            return JSString(self.value)
+        elif cell_type >= JSType.ObjectType:
+            return JSObject(self.value)
+
     def decode(self):
         '''Webkit internally encodes types, this method decodes them and return the
         corresponding python's datatype'''
@@ -9468,7 +9480,7 @@ class JSValue(object):
             return self._decode_special_values()
 
         # if we are here then we have (probably) an object
-        return JSObject(self.value)
+        return self._decode_objects()
 
 
 from enum import Flag
@@ -9500,13 +9512,53 @@ class IndexingType(Flag):
     SlowPutArrayStorageShape = 0x0c
 
 
-class JSObject(object):
-
-    first_out_of_line_offset = 0x64
+class JSCell(object):
 
     def __init__(self, addr):
         self.addr = gdb.Value(addr)
         self._parse_memory()
+
+    def __repr__(self):
+        return f'<{self.__class__.__name__}(addr={self.addr}, indexingType={self.indexingType}, type={self.type})>'
+
+    def _parse_jscell(self):
+        return _dereference(self.addr, 'JSC::JSCell')
+
+    def _parse_memory(self):
+        self.jscell = self._parse_jscell()
+
+    def _resolve_string(self, _ref):
+        _ptr = _ref['m_data8']
+        _length = _ref['m_length']
+        return _ptr.string('utf-8', "", _length)
+
+    @property
+    def indexingType(self):
+        return IndexingType(int(self.jscell['m_indexingType']))
+
+    @property
+    def type(self):
+        return self.jscell['m_type']
+
+
+class JSString(JSCell):
+
+    def _parse_memory(self):
+        super()._parse_memory()
+
+        self.jsstring = _dereference(self.addr, 'JSC::JSString')
+
+    def __repr__(self):
+        return f'<{self.__class__.__name__}(addr={self.addr}, value={self.string})>'
+
+    @property
+    def string(self):
+        return self._resolve_string(self.jsstring['m_value']['m_impl']['m_ptr'])
+
+
+class JSObject(JSCell):
+
+    first_out_of_line_offset = 0x64
 
     def __repr__(self):
         return f'<{self.__class__.__name__}({self.addr}, {self.jsobject["m_type"]}, {self.indexingType}, {self.lengths})>'
@@ -9516,6 +9568,7 @@ class JSObject(object):
         return f'{self.class_name} {self.indexingType}, {self.lengths} {{\n\t{keys_str}\n}}'
 
     def _parse_memory(self):
+        super()._parse_memory()
         self.jsobject = self._parse_jsobject()
         self.butterfly = self.jsobject['m_butterfly']['m_value']
         self.structure = self._parse_structure()
@@ -9575,10 +9628,6 @@ class JSObject(object):
         lengths = self._indexing_header['u']['lengths']
 
         return int(lengths['publicLength']), int(lengths['vectorLength'])
-
-    @property
-    def indexingType(self):
-        return IndexingType(int(self.jsobject['m_indexingType']))
 
     @property
     def _outofline_storage(self):

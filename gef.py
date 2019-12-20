@@ -9435,7 +9435,7 @@ class JSValue(object):
     def _decode_number(self):
         if (int(self.value) & self.TagTypeNumber) == self.TagTypeNumber:
             return int(int(self.value) ^ self.TagTypeNumber)  # we must remove the tag obviously
-        value = int(self.value - self.DoubleEncodeOffset)
+        value = int(self.value) - self.DoubleEncodeOffset
         return struct.unpack('d', value.to_bytes(8, 'little'))[0]
 
     def _decode_other(self):

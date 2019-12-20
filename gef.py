@@ -9489,12 +9489,13 @@ from enum import Flag
 
 class JSTypeMetaclass(type):
 
-    _jstype_type = gdb.lookup_type('JSC::JSType')
+    def _get_type(self):  # JSType is not available at loading time
+        return gdb.lookup_type('JSC::JSType')
 
     def __getattr__(cls, key):
         key_jsc = f'JSC::{key}' if 'JSC::' not in key else key
-        if key_jsc in cls._jstype_type.keys():
-            return cls._jstype_type[key_jsc].enumval
+        if key_jsc in cls._get_type().keys():
+            return cls._get_type()[key_jsc].enumval
         else:
             return super().__getattr(key)
 
@@ -9621,11 +9622,15 @@ class JSObject(JSCell):
 
     @property
     def _indexing_header(self):
+        if not self.butterfly:
+            return None
         indexing_header_ptr_type = gdb.lookup_type('JSC::IndexingHeader').pointer()
         return self.butterfly.cast(indexing_header_ptr_type) - 1
 
     @property
     def lengths(self):
+        if not self.butterfly:
+            return 0, 0
         lengths = self._indexing_header['u']['lengths']
 
         return int(lengths['publicLength']), int(lengths['vectorLength'])

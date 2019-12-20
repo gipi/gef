@@ -9420,9 +9420,10 @@ class JSValue(object):
 
     def __init__(self, value):
         self.value = gdb.Value(value)  # remember to cast to int when arithmetic is involved
+        self.decoded = self.decode()
 
     def __repr__(self):
-        return f'<{self.__class__.__name__}({self.value!s})>'
+        return f'<{self.__class__.__name__}({self.value!s} | {self.decoded!r})>'  # we use !r to avoid recursion
 
     @classmethod
     def from_address(cls, addr):

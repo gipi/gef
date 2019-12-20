@@ -9509,11 +9509,11 @@ class JSObject(object):
         self._parse_memory()
 
     def __repr__(self):
-        return f'<{self.__class__.__name__}({self.addr}[{self.indexingType}])>'
+        return f'<{self.__class__.__name__}({self.addr}, {self.jsobject["m_type"]}, {self.indexingType}, {self.lengths})>'
 
     def __str__(self):
         keys_str = '\n\t'.join(['{0}: {1}'.format(_[0], _[1]) for _ in self.keys])
-        return f'{self.class_name} {{\n\t{keys_str}\n}}'
+        return f'{self.class_name} {self.indexingType}, {self.lengths} {{\n\t{keys_str}\n}}'
 
     def _parse_memory(self):
         self.jsobject = self._parse_jsobject()
@@ -9569,6 +9569,12 @@ class JSObject(object):
     def _indexing_header(self):
         indexing_header_ptr_type = gdb.lookup_type('JSC::IndexingHeader').pointer()
         return self.butterfly.cast(indexing_header_ptr_type) - 1
+
+    @property
+    def lengths(self):
+        lengths = self._indexing_header['u']['lengths']
+
+        return int(lengths['publicLength']), int(lengths['vectorLength'])
 
     @property
     def indexingType(self):

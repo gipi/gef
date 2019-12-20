@@ -9670,7 +9670,6 @@ class JSObject(JSCell):
             _length = _entry['key']['m_length']
             return _entry['key']['m_data8'].string('utf-8', "", _length)
 
-        #return [(_get_key(self.properties, _), self.properties[_]['offset']) for _ in range(self.property_table['m_keyCount'])]
         return [(_get_key(self.properties, _), self._property_for_offset(self.properties[_]['offset'])) for _ in range(self.property_table['m_keyCount'])]
 
 

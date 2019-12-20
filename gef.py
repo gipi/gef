@@ -9479,11 +9479,11 @@ class JSTypeMetaclass(type):
     _jstype_type = gdb.lookup_type('JSC::JSType')
 
     def __getattr__(cls, key):
-        key_jsc = f'JSC::{key}'
-        if key_jsc not in cls._jstype_type.keys():
-            raise AttributeError(key)
-
-        return cls._jstype_type[key_jsc].enumval
+        key_jsc = f'JSC::{key}' if 'JSC::' not in key else key
+        if key_jsc in cls._jstype_type.keys():
+            return cls._jstype_type[key_jsc].enumval
+        else:
+            return super().__getattr(key)
 
 
 class JSType(metaclass=JSTypeMetaclass):
